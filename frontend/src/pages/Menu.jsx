@@ -12,8 +12,11 @@ import LoadingSpinner from '../components/common/LoadingSpinner';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const getImageSrc = (url) => {
-  if (!url) return `${API_URL}/static/menu/placeholder.jpg`;
+  if (!url) return '/images/menu/placeholder.jpg';
   if (url.startsWith('http')) return url;
+  // /images/menu/* are served by Vite as public static assets — no prefix needed
+  if (url.startsWith('/images/')) return url;
+  // /static/menu/* are served by FastAPI — needs backend prefix
   return `${API_URL}${url}`;
 };
 

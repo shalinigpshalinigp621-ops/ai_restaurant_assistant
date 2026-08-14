@@ -11,8 +11,9 @@ import LoadingSpinner from '../components/common/LoadingSpinner';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const getImageSrc = (url) => {
-  if (!url) return `${API_URL}/static/menu/placeholder.jpg`;
+  if (!url) return '/images/menu/placeholder.jpg';
   if (url.startsWith('http')) return url;
+  if (url.startsWith('/images/')) return url;
   return `${API_URL}${url}`;
 };
 
