@@ -9,11 +9,20 @@ import { menuAPI } from '../services/api';
 import toast from 'react-hot-toast';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+const getImageSrc = (url) => {
+  if (!url) return `${API_URL}/static/menu/placeholder.jpg`;
+  if (url.startsWith('http')) return url;
+  return `${API_URL}${url}`;
+};
+
+
 const CATEGORIES = [
-  { id: 'APPETIZER', label: 'Appetizers' },
-  { id: 'MAIN_COURSE', label: 'Main Courses' },
-  { id: 'DESSERT', label: 'Desserts' },
-  { id: 'BEVERAGE', label: 'Beverages' },
+  { id: 'appetizer', label: 'Appetizers' },
+  { id: 'main_course', label: 'Main Courses' },
+  { id: 'dessert', label: 'Desserts' },
+  { id: 'beverage', label: 'Beverages' },
 ];
 
 export default function Menu() {
@@ -29,10 +38,12 @@ export default function Menu() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
   const [formData, setFormData] = useState({
-    name: '', description: '', category: 'MAIN_COURSE',
+    name: '', description: '', category: 'main_course',
     price: '', cost_price: '', is_available: true,
-    is_vegetarian: false, calories: '', preparation_time: ''
+    is_vegetarian: false, calories: '', preparation_time: '',
+    image_url: ''
   });
+  const [selectedFile, setSelectedFile] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -49,26 +60,34 @@ export default function Menu() {
       setItems(res.data.items);
     } catch (error) {
       console.error(error);
-      toast.error('Failed to load menu items');
+      const status = error.response?.status || 'Network Error';
+      let detail = error.response?.data?.detail || '';
+      if (Array.isArray(detail)) {
+         detail = detail.map(e => `${e.loc?.slice(-1)}: ${e.msg}`).join(' | ');
+      }
+      toast.error(`Menu loading failed: HTTP ${status}${detail ? ` - ${detail}` : ''}`);
     } finally {
       setLoading(false);
     }
   };
 
   const openModal = (item = null) => {
+    setSelectedFile(null);
     if (item) {
       setEditingItem(item);
       setFormData({
         name: item.name, description: item.description || '', category: item.category,
         price: item.price, cost_price: item.cost_price || '', is_available: item.is_available,
-        is_vegetarian: item.is_vegetarian, calories: item.calories || '', preparation_time: item.preparation_time || ''
+        is_vegetarian: item.is_vegetarian, calories: item.calories || '', preparation_time: item.preparation_time || '',
+        image_url: item.image_url || ''
       });
     } else {
       setEditingItem(null);
       setFormData({
-        name: '', description: '', category: 'MAIN_COURSE',
+        name: '', description: '', category: 'main_course',
         price: '', cost_price: '', is_available: true,
-        is_vegetarian: false, calories: '', preparation_time: ''
+        is_vegetarian: false, calories: '', preparation_time: '',
+        image_url: ''
       });
     }
     setIsModalOpen(true);
@@ -77,22 +96,32 @@ export default function Menu() {
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingItem(null);
+    setSelectedFile(null);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSaving(true);
     
-    // Parse numbers
-    const payload = {
-      ...formData,
-      price: parseFloat(formData.price),
-      cost_price: formData.cost_price ? parseFloat(formData.cost_price) : null,
-      calories: formData.calories ? parseInt(formData.calories) : null,
-      preparation_time: formData.preparation_time ? parseInt(formData.preparation_time) : null,
-    };
-
     try {
+      let finalImageUrl = formData.image_url;
+      
+      // Upload image first if one is selected
+      if (selectedFile) {
+        const uploadRes = await menuAPI.uploadImage(selectedFile);
+        finalImageUrl = uploadRes.data.image_url;
+      }
+      
+      // Parse numbers
+      const payload = {
+        ...formData,
+        price: parseFloat(formData.price),
+        cost_price: formData.cost_price ? parseFloat(formData.cost_price) : null,
+        calories: formData.calories ? parseInt(formData.calories) : null,
+        preparation_time: formData.preparation_time ? parseInt(formData.preparation_time) : null,
+        image_url: finalImageUrl || null,
+      };
+
       if (editingItem) {
         await menuAPI.update(editingItem.id, payload);
         toast.success('Menu item updated!');
@@ -103,7 +132,12 @@ export default function Menu() {
       closeModal();
       fetchMenu();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to save item');
+      const status = error.response?.status || 'Network Error';
+      let detail = error.response?.data?.detail || '';
+      if (Array.isArray(detail)) {
+         detail = detail.map(e => `${e.loc?.slice(-1)}: ${e.msg}`).join(' | ');
+      }
+      toast.error(`Save failed: HTTP ${status}${detail ? ` - ${detail}` : ''}`);
     } finally {
       setIsSaving(false);
     }
@@ -183,12 +217,22 @@ export default function Menu() {
             <div key={item.id} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
               <div style={{ 
                 height: '140px', 
-                background: item.image_url ? `url(${item.image_url}) center/cover` : 'var(--bg-elevated)',
+                background: 'var(--bg-elevated)',
                 display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end', padding: '12px',
-                borderBottom: '1px solid var(--border-subtle)'
+                borderBottom: '1px solid var(--border-subtle)',
+                position: 'relative'
               }}>
-                {!item.image_url && <i className="bi bi-image" style={{ fontSize: '32px', color: 'var(--text-muted)', margin: 'auto' }}></i>}
-                <div style={{ display: 'flex', gap: '6px' }}>
+                {item.image_url ? (
+                  <img 
+                    src={getImageSrc(item.image_url)} 
+                    alt={item.name}
+                    style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover', zIndex: 0 }}
+                    onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = `${API_URL}/static/menu/placeholder.jpg`; }}
+                  />
+                ) : (
+                  <i className="bi bi-image" style={{ fontSize: '32px', color: 'var(--text-muted)', margin: 'auto', zIndex: 0 }}></i>
+                )}
+                <div style={{ display: 'flex', gap: '6px', zIndex: 1 }}>
                   {item.is_vegetarian && (
                     <span className="badge badge-success" style={{ boxShadow: 'var(--shadow-sm)' }}><i className="bi bi-circle-fill text-success" style={{fontSize:'8px'}}></i> Veg</span>
                   )}
@@ -270,6 +314,28 @@ export default function Menu() {
                 <div className="form-group">
                   <label className="form-label">Cost Price (₹)</label>
                   <input type="number" step="0.01" min="0" className="form-input" value={formData.cost_price} onChange={e => setFormData({...formData, cost_price: e.target.value})} />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Image</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <input 
+                    type="file" 
+                    accept="image/*" 
+                    onChange={e => setSelectedFile(e.target.files[0])} 
+                    className="form-input" 
+                    style={{ flex: 1, padding: '8px' }}
+                  />
+                  {(selectedFile || formData.image_url) && (
+                    <div style={{ width: '40px', height: '40px', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border-subtle)' }}>
+                      <img 
+                        src={selectedFile ? URL.createObjectURL(selectedFile) : (formData.image_url.startsWith('http') ? formData.image_url : `${import.meta.env.VITE_API_URL}${formData.image_url}`)} 
+                        alt="Preview" 
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
 

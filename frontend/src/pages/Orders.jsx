@@ -8,6 +8,15 @@ import { menuAPI, ordersAPI } from '../services/api';
 import toast from 'react-hot-toast';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+const getImageSrc = (url) => {
+  if (!url) return `${API_URL}/static/menu/placeholder.jpg`;
+  if (url.startsWith('http')) return url;
+  return `${API_URL}${url}`;
+};
+
+
 const CATEGORIES = [
   { id: 'APPETIZER', label: 'Appetizers' },
   { id: 'MAIN_COURSE', label: 'Main Courses' },
@@ -23,7 +32,7 @@ export default function Orders() {
 
   // POS State
   const [cart, setCart] = useState([]);
-  const [orderType, setOrderType] = useState('DINE_IN');
+  const [orderType, setOrderType] = useState('dine_in');
   const [tableNumber, setTableNumber] = useState('');
   const [notes, setNotes] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
@@ -89,7 +98,7 @@ export default function Orders() {
 
   const handleCheckout = async () => {
     if (cart.length === 0) return toast.error('Cart is empty');
-    if (orderType === 'DINE_IN' && !tableNumber) return toast.error('Table number is required for Dine-in');
+    if (orderType === 'dine_in' && !tableNumber) return toast.error('Table number is required for Dine-in');
 
     setIsSubmitting(true);
     try {
@@ -111,7 +120,16 @@ export default function Orders() {
       // Optionally switch to history
       setActiveTab('HISTORY');
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to place order');
+      // Improved Error Handling
+      if (error.response?.data?.detail) {
+        let errMsg = error.response.data.detail;
+        if (Array.isArray(errMsg)) {
+           errMsg = errMsg.map(e => `${e.loc?.slice(-1)}: ${e.msg}`).join(' | ');
+        }
+        toast.error(`Order failed: ${error.response.status} - ${errMsg}`);
+      } else {
+        toast.error('Failed to place order: Network or Server Error');
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -210,14 +228,28 @@ export default function Orders() {
                     <div 
                       key={item.id} 
                       className="card" 
-                      style={{ padding: '12px', cursor: 'pointer', transition: 'all 0.2s', border: '1px solid var(--border-subtle)' }}
+                      style={{ padding: '0', cursor: 'pointer', transition: 'all 0.2s', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}
                       onClick={() => addToCart(item)}
                       onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--color-primary)'}
                       onMouseLeave={(e) => e.currentTarget.style.borderColor = 'var(--border-subtle)'}
                     >
-                      <div style={{ height: '100px', background: item.image_url ? `url(${item.image_url}) center/cover` : 'var(--bg-base)', borderRadius: 'var(--radius-sm)', marginBottom: '8px' }}></div>
-                      <h4 style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.name}</h4>
-                      <p style={{ color: 'var(--color-primary)', fontWeight: 800, margin: 0 }}>₹{item.price}</p>
+                      <div style={{ height: '130px', overflow: 'hidden', position: 'relative', background: 'var(--bg-elevated)' }}>
+                        <img
+                          src={getImageSrc(item.image_url)}
+                          alt={item.name}
+                          onError={(e) => { e.target.onerror = null; e.target.src = `${API_URL}/static/menu/placeholder.jpg`; }}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', transition: 'transform 0.3s ease' }}
+                          onMouseEnter={(e) => e.target.style.transform = 'scale(1.07)'}
+                          onMouseLeave={(e) => e.target.style.transform = 'scale(1)'}
+                        />
+                        <div style={{ position: 'absolute', top: '8px', right: '8px', background: 'var(--color-primary)', color: '#fff', borderRadius: '20px', padding: '2px 8px', fontSize: '12px', fontWeight: 700 }}>
+                          ₹{item.price}
+                        </div>
+                      </div>
+                      <div style={{ padding: '10px 12px 12px' }}>
+                        <h4 style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.name}</h4>
+                        <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0, textTransform: 'capitalize' }}>{item.category?.replace('_', ' ').toLowerCase()}</p>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -261,11 +293,11 @@ export default function Orders() {
             <div style={{ padding: '16px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)' }}>
               <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
                 <select className="form-input" value={orderType} onChange={e => setOrderType(e.target.value)} style={{ flex: 1 }}>
-                  <option value="DINE_IN">Dine-in</option>
-                  <option value="TAKEAWAY">Takeaway</option>
-                  <option value="DELIVERY">Delivery</option>
+                  <option value="dine_in">Dine-in</option>
+                  <option value="takeaway">Takeaway</option>
+                  <option value="delivery">Delivery</option>
                 </select>
-                {orderType === 'DINE_IN' && (
+                {orderType === 'dine_in' && (
                   <input type="text" className="form-input" placeholder="Table #" value={tableNumber} onChange={e => setTableNumber(e.target.value)} style={{ width: '80px' }} />
                 )}
               </div>

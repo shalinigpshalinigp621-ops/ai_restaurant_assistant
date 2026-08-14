@@ -1,9 +1,11 @@
 """
 Menu API routes.
 """
-from fastapi import APIRouter, Depends, status, Query
+from fastapi import APIRouter, Depends, status, Query, UploadFile, File, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
+import os
+import uuid
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_manager
 from app.models.user import User
@@ -13,6 +15,33 @@ from app.schemas.user import MessageResponse
 from app.services.menu_service import MenuService
 
 router = APIRouter(prefix="/menu", tags=["Menu"])
+
+@router.post(
+    "/upload",
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload a menu item image (Manager/Admin)",
+)
+async def upload_menu_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_manager),
+):
+    # Ensure static directory exists
+    os.makedirs("static/menu", exist_ok=True)
+    
+    # Generate unique filename
+    ext = file.filename.split('.')[-1] if '.' in file.filename else 'jpg'
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    filepath = f"static/menu/{filename}"
+    
+    # Save file
+    try:
+        content = await file.read()
+        with open(filepath, "wb") as f:
+            f.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not save file: {e}")
+        
+    return {"image_url": f"/static/menu/{filename}"}
 
 @router.post(
     "/",

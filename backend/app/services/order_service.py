@@ -92,7 +92,6 @@ class OrderService:
 
         # Create Order model
         order = Order(
-            user_id=user_id,
             customer_id=data.customer_id,
             status=OrderStatus.PENDING,
             table_number=data.table_number,

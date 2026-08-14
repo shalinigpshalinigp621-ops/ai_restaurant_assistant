@@ -139,6 +139,15 @@ export const menuAPI = {
   create: (data) => api.post('/api/v1/menu/', data),
   update: (id, data) => api.put(`/api/v1/menu/${id}`, data),
   delete: (id) => api.delete(`/api/v1/menu/${id}`),
+  uploadImage: (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post('/api/v1/menu/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+  },
 };
 
 // ─── Orders API ─────────────────────────────────────────────────────
