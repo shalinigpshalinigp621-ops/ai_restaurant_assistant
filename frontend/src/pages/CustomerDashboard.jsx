@@ -240,17 +240,19 @@ export default function CustomerDashboard({ activeTab: propActiveTab }) {
     setAiLoading(true);
 
     try {
-      const res = await aiAPI.chat({ query: textToSend, conversation_id: 'customer_session' });
-      const answer = res.data?.answer || res.data?.response || "Here are our chef's recommended choices for you!";
+      const res = await aiAPI.chat({ question: textToSend });
+      const answer = res.data?.answer || res.data?.response || "I could not generate an answer for your request.";
       const sources = res.data?.sources || [];
       setAiMessages((prev) => [...prev, { sender: 'assistant', text: answer, sources }]);
     } catch (err) {
+      console.error('Customer AI Chat Error:', err);
+      const errorDetail = err.response?.data?.detail || err.message || 'Error connecting to AI service';
       setAiMessages((prev) => [
         ...prev,
         {
           sender: 'assistant',
-          text: `For ${textToSend}, we highly recommend our popular Chef Specials such as Masala Dosa, Chicken Biryani, or Mutton Rogan Josh!`,
-          sources: ['Executive Menu']
+          text: `⚠️ **AI Service Error:** ${typeof errorDetail === 'string' ? errorDetail : JSON.stringify(errorDetail)}`,
+          sources: []
         }
       ]);
     } finally {

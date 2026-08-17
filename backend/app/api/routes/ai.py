@@ -156,45 +156,70 @@ async def add_knowledge_base_document(
 @router.get("/status")
 async def get_ai_status(current_user: User = Depends(get_current_user)):
     """
-    Diagnostic endpoint to test Gemini AI configuration securely.
+    Diagnostic endpoint to test Gemini AI & ChromaDB configuration securely without exposing keys.
     """
-    from app.core.config import settings
-    api_key = settings.GOOGLE_API_KEY
+    from app.core.config import settings, get_gemini_api_key
+    from app.core.vector_db import vector_db
+
+    api_key = get_gemini_api_key()
     model = settings.GEMINI_MODEL
-    
+
+    # Check ChromaDB status
+    chroma_online = False
+    try:
+        vector_db.initialize()
+        chroma_online = vector_db.collection is not None
+    except Exception:
+        chroma_online = False
+
     status_report = {
-        "api_key_detected": bool(api_key and api_key != "your-google-gemini-api-key-here"),
+        "api_key_configured": bool(api_key),
+        "api_key_detected": bool(api_key),
         "sdk_installed": False,
         "client_initialized": False,
+        "chromadb_status": "ONLINE" if chroma_online else "OFFLINE",
         "model_configured": model,
         "test_result": "FAILED",
+        "error_category": None,
         "error": None
     }
-    
-    if not status_report["api_key_detected"]:
-        status_report["error"] = "API key missing or default."
+
+    if not api_key:
+        status_report["error_category"] = "missing_api_key"
+        status_report["error"] = "Gemini API Key is not configured. Please set GOOGLE_API_KEY in backend/.env."
         return status_report
 
     try:
         from google import genai
         status_report["sdk_installed"] = True
-        
+
         client = genai.Client(api_key=api_key)
         status_report["client_initialized"] = True
-        
-        # Lightweight test
+
+        # Lightweight test with Gemini
         response = client.models.generate_content(
             model=model,
-            contents="Return the word OK."
+            contents="Respond with OK."
         )
         if response and response.text:
             status_report["test_result"] = "SUCCESS"
         else:
-            status_report["error"] = "Empty response from Gemini."
-            
+            status_report["error_category"] = "empty_response"
+            status_report["error"] = "Empty response received from Gemini."
+
     except ImportError:
-        status_report["error"] = "google-genai SDK is not installed."
+        status_report["error_category"] = "sdk_missing"
+        status_report["error"] = "google-genai Python SDK is not installed."
     except Exception as e:
-        status_report["error"] = str(e)
-        
+        err_msg = str(e)
+        status_report["error"] = err_msg
+        if "API_KEY_INVALID" in err_msg or "400" in err_msg or "403" in err_msg or "API key not valid" in err_msg:
+            status_report["error_category"] = "invalid_api_key"
+        elif "404" in err_msg or "not found" in err_msg.lower():
+            status_report["error_category"] = "model_not_found"
+        elif "429" in err_msg or "quota" in err_msg.lower():
+            status_report["error_category"] = "quota_exceeded"
+        else:
+            status_report["error_category"] = "gemini_error"
+
     return status_report

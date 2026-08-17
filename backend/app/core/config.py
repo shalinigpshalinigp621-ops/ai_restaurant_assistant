@@ -6,7 +6,14 @@ Reads from environment variables and .env file.
 from pydantic_settings import BaseSettings
 from pydantic import AnyHttpUrl
 from typing import List
+from dotenv import load_dotenv
 import os
+
+# Explicitly load backend/.env if it exists regardless of execution CWD
+backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+env_path = os.path.join(backend_dir, ".env")
+if os.path.exists(env_path):
+    load_dotenv(env_path, override=True)
 
 
 class Settings(BaseSettings):
@@ -27,7 +34,7 @@ class Settings(BaseSettings):
 
     # Google Gemini AI
     GOOGLE_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-3.5-flash"
+    GEMINI_MODEL: str = "gemini-2.5-flash"
     EMBEDDING_MODEL: str = "text-embedding-004"
 
     # ChromaDB
@@ -58,3 +65,22 @@ class Settings(BaseSettings):
 
 # Singleton settings instance
 settings = Settings()
+
+
+def get_gemini_api_key() -> str:
+    """
+    Safely retrieve Gemini API Key checking GOOGLE_API_KEY, GEMINI_API_KEY, and GOOGLE_GEMINI_API_KEY.
+    Returns empty string if unconfigured or default placeholder.
+    """
+    key = (
+        os.getenv("GOOGLE_API_KEY") or
+        os.getenv("GEMINI_API_KEY") or
+        os.getenv("GOOGLE_GEMINI_API_KEY") or
+        getattr(settings, "GOOGLE_API_KEY", "") or
+        ""
+    ).strip()
+
+    if key and key != "your-google-gemini-api-key-here":
+        return key
+    return ""
+

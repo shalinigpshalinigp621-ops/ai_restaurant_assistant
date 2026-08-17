@@ -1,8 +1,8 @@
 """
-AI Service — Full RAG pipeline integrating PostgreSQL live data, ChromaDB vector retrieval,
-and Google Gemini Generative AI. Falls back to intelligent data-driven analysis when Gemini key
-is not configured.
+AI Service — Full RAG pipeline integrating live database data, ChromaDB vector retrieval,
+and Google Gemini Generative AI.
 """
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 from typing import List, Dict, Any, Optional
@@ -11,7 +11,7 @@ import time
 import logging
 import os
 
-from app.core.config import settings
+from app.core.config import settings, get_gemini_api_key
 from app.core.vector_db import vector_db
 from app.models.all_models import AILog, FoodWaste, Order, OrderItem, Menu, Review, Customer
 from app.repositories.ai_repository import AIRepository
@@ -25,27 +25,44 @@ class AIService:
         self.db = db
         self.repo = AIRepository(db)
 
-    # ─── Live PostgreSQL Data Fetchers ────────────────────────────────────────
+    # ─── Live Data Fetchers ───────────────────────────────────────────────────
 
+    async def _get_menu_context(self) -> str:
+        """Fetch full menu items from database for grounding Gemini responses."""
+        try:
+            menu_q = select(Menu).where(Menu.is_available == True)
+            res = await self.db.execute(menu_q)
+            items = res.scalars().all()
 
+            if not items:
+                return "Menu database is empty."
+
+            lines = ["Complete Available Restaurant Menu:"]
+            for m in items:
+                veg_tag = "[VEGETARIAN]" if m.is_vegetarian else "[NON-VEG]"
+                desc = f" — {m.description}" if m.description else ""
+                cat = m.category.value if hasattr(m.category, 'value') else str(m.category)
+                lines.append(f"  • {m.name} ({veg_tag}, Category: {cat}, Price: ₹{m.price:.2f}){desc}")
+
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"Menu context error: {e}")
+            return "Menu data temporarily unavailable."
 
     async def _get_waste_context(self) -> str:
-        """Fetch recent food waste data from PostgreSQL."""
+        """Fetch recent food waste data from database."""
         try:
             now = datetime.now(timezone.utc)
             week_ago = now - timedelta(days=7)
 
-            # Recent waste logs
             waste_q = select(FoodWaste).order_by(desc(FoodWaste.created_at)).limit(10)
             waste_res = await self.db.execute(waste_q)
             waste_items = waste_res.scalars().all()
 
-            # Total waste cost this week
             cost_q = select(func.sum(FoodWaste.cost)).where(FoodWaste.created_at >= week_ago)
             cost_res = await self.db.execute(cost_q)
             total_cost = cost_res.scalar() or 0
 
-            # Total waste quantity this week
             qty_q = select(func.sum(FoodWaste.quantity_wasted)).where(FoodWaste.created_at >= week_ago)
             qty_res = await self.db.execute(qty_q)
             total_qty = qty_res.scalar() or 0
@@ -65,7 +82,6 @@ class AIService:
                         f"  • {w.ingredient_name}: {w.quantity_wasted:.1f} {w.unit} "
                         f"— Reason: {w.reason} — Cost: ₹{w.cost:.2f}"
                     )
-                # Top waste reasons
                 if reason_counts:
                     top_reason = max(reason_counts, key=reason_counts.get)
                     lines.append(f"Most common waste reason: '{top_reason}' ({reason_counts[top_reason]} occurrences)")
@@ -76,28 +92,24 @@ class AIService:
             return "Food waste data temporarily unavailable."
 
     async def _get_sales_context(self) -> str:
-        """Fetch recent sales and order data from PostgreSQL."""
+        """Fetch recent sales and order data from database."""
         try:
             now = datetime.now(timezone.utc)
             today = now.replace(hour=0, minute=0, second=0, microsecond=0)
             week_ago = now - timedelta(days=7)
 
-            # Today's revenue
             rev_q = select(func.sum(Order.total_amount)).where(Order.created_at >= today)
             rev_res = await self.db.execute(rev_q)
             today_rev = rev_res.scalar() or 0
 
-            # Today's orders
             ord_q = select(func.count(Order.id)).where(Order.created_at >= today)
             ord_res = await self.db.execute(ord_q)
             today_orders = ord_res.scalar() or 0
 
-            # Week revenue
             week_rev_q = select(func.sum(Order.total_amount)).where(Order.created_at >= week_ago)
             week_rev_res = await self.db.execute(week_rev_q)
             week_rev = week_rev_res.scalar() or 0
 
-            # Top selling menu items (by order item count)
             top_q = (
                 select(Menu.name, func.count(OrderItem.id).label("order_count"))
                 .join(OrderItem, OrderItem.menu_item_id == Menu.id)
@@ -125,9 +137,8 @@ class AIService:
             return "Sales data temporarily unavailable."
 
     async def _get_reviews_context(self) -> str:
-        """Fetch recent customer review sentiment data from PostgreSQL."""
+        """Fetch recent customer review sentiment data from database."""
         try:
-            # Sentiment counts
             pos_q = select(func.count(Review.id)).where(Review.sentiment == "positive")
             neg_q = select(func.count(Review.id)).where(Review.sentiment == "negative")
             neu_q = select(func.count(Review.id)).where(Review.sentiment == "neutral")
@@ -137,12 +148,10 @@ class AIService:
             neu = (await self.db.execute(neu_q)).scalar() or 0
             total = pos + neg + neu
 
-            # Average rating
             avg_q = select(func.avg(Review.rating))
             avg_res = await self.db.execute(avg_q)
             avg_rating = avg_res.scalar() or 0
 
-            # Latest reviews
             recent_q = select(Review).order_by(desc(Review.created_at)).limit(5)
             recent_res = await self.db.execute(recent_q)
             recent = recent_res.scalars().all()
@@ -170,87 +179,95 @@ class AIService:
             logger.error(f"Reviews context error: {e}")
             return "Review data temporarily unavailable."
 
-    # ─── Smart Fallback Response Generator ───────────────────────────────────
-    # Removed as per user request to handle Gemini failures properly.
     # ─── Main RAG Answer Method ───────────────────────────────────────────────
 
     async def answer_question(self, user_id: Optional[int], request: ChatRequest) -> ChatResponse:
         start_time = time.time()
-        question = request.question
+        question = request.question.strip()
+        logger.info(f"Received AI chat question: '{question}' for user_id: {user_id}")
 
-        # 1. ChromaDB vector retrieval
+        # 1. Check Gemini configuration securely
+        api_key = get_gemini_api_key()
+        if not api_key:
+            logger.warning("Gemini API key is missing or set to default placeholder.")
+            raise HTTPException(
+                status_code=400,
+                detail="Gemini API Key is not configured. Please set a valid GOOGLE_API_KEY in backend/.env to use the AI Assistant."
+            )
+
+        # 2. ChromaDB vector retrieval for RAG
         context_texts = []
         retrieved_items = []
         chroma_context = ""
         try:
-            retrieved_items = vector_db.query(question, n_results=3)
+            retrieved_items = vector_db.query(question, n_results=5)
             context_texts = [item["text"] for item in retrieved_items]
             chroma_context = "\n".join([f"- {text}" for text in context_texts])
         except Exception as e:
             logger.error(f"ChromaDB retrieval failed: {e}")
-            chroma_context = "ChromaDB vector retrieval is currently unavailable."
+            chroma_context = "ChromaDB vector retrieval is currently offline or unavailable."
 
-        # 2. Live PostgreSQL data retrieval (parallel context building)
+        # 3. Live database context retrieval
+        menu_ctx = await self._get_menu_context()
         waste_ctx = await self._get_waste_context()
         sales_ctx = await self._get_sales_context()
         reviews_ctx = await self._get_reviews_context()
 
+        # 4. Call Google Gemini AI
         answer = ""
         model_used = settings.GEMINI_MODEL
 
-        # 3. Try Google Gemini if API key is configured
-        api_key = settings.GOOGLE_API_KEY
-        if not api_key or api_key == "your-google-gemini-api-key-here":
-            logger.warning("Gemini API key is not configured. Falling back to data analytics engine.")
-            model_used = "Data Analytics Engine (Offline Fallback)"
-            answer = (
-                f"**Insight:**\nAnalysis of active operational data for: '{question}'.\n\n"
-                f"**Reason:**\nLive database metrics retrieved from sales, inventory waste logs, and customer reviews.\n\n"
-                f"**Evidence:**\n{sales_ctx}\n\n{waste_ctx}\n\n{reviews_ctx}\n\n"
-                f"**Recommendation:**\nMonitor top-selling dishes and optimize ingredient stock orders based on weekly sales patterns."
+        try:
+            from google import genai
+            client = genai.Client(api_key=api_key)
+
+            prompt = (
+                "You are the AI Assistant for RestaurantAI, an intelligent restaurant management and dining concierge platform.\n"
+                "Answer the user's specific question clearly, accurately, and helpfully using the live restaurant data and knowledge base provided below.\n\n"
+                "RULES:\n"
+                "1. Answer ONLY based on the provided live data and knowledge base context.\n"
+                "2. Directly address the user's exact question. For menu, dish, pricing, vegetarian/spicy items, sales trends, or food waste queries, refer to the actual data provided below.\n"
+                "3. If pricing is requested, format prices in Indian Rupees (₹).\n"
+                "4. Be polite, concise, and informative.\n\n"
+                f"=== LIVE RESTAURANT MENU ===\n{menu_ctx}\n\n"
+                f"=== SALES & BEST-SELLERS ===\n{sales_ctx}\n\n"
+                f"=== FOOD WASTE LOGS ===\n{waste_ctx}\n\n"
+                f"=== CUSTOMER REVIEWS & SENTIMENT ===\n{reviews_ctx}\n\n"
+                f"=== KNOWLEDGE BASE (RAG DOCS) ===\n{chroma_context}\n\n"
+                f"=== USER QUESTION ===\n{question}"
             )
-        else:
-            try:
-                from google import genai
-                client = genai.Client(api_key=api_key)
 
-                prompt = (
-                    "You are the Intelligent Restaurant Operations Assistant for RestaurantAI. "
-                    "Answer the staff/manager question clearly and helpfully using the live data below. "
-                    "You MUST format your response exactly using these four Markdown headers:\n"
-                    "**Insight:** (Your main finding)\n"
-                    "**Reason:** (Why this is happening)\n"
-                    "**Evidence:** (Data points from the context. If data is missing or insufficient, state 'Insufficient evidence in the database.')\n"
-                    "**Recommendation:** (Actionable advice)\n\n"
-                    "CRITICAL: Do NOT invent or hallucinate statistics, numbers, or facts. Ground all findings in the provided context.\n\n"
-                    f"=== CHROMADB KNOWLEDGE BASE ===\n{chroma_context}\n\n"
-                    f"=== LIVE POSTGRESQL DATA ===\n"
-                    f"{waste_ctx}\n\n"
-                    f"{sales_ctx}\n\n"
-                    f"{reviews_ctx}\n\n"
-                    f"=== USER QUESTION ===\n{question}"
-                )
+            response = client.models.generate_content(
+                model=settings.GEMINI_MODEL,
+                contents=prompt
+            )
 
-                response = client.models.generate_content(
-                    model=settings.GEMINI_MODEL,
-                    contents=prompt
-                )
-                if response and response.text:
-                    answer = response.text
-                    model_used = settings.GEMINI_MODEL
-                    logger.info(f"Gemini response generated successfully for question: {question[:60]}")
-                else:
-                    raise Exception("Empty response from Gemini")
+            if response and response.text:
+                answer = response.text
+                logger.info(f"Successfully generated Gemini answer for question: '{question}'")
+            else:
+                raise Exception("Gemini returned an empty response.")
 
-            except Exception as e:
-                logger.warning(f"Gemini API unavailable or rate-limited: {e}. Generating data-grounded fallback analysis.")
-                model_used = "Data Analytics Engine (Offline Fallback)"
-                answer = (
-                    f"**Insight:**\nAnalysis of active operational data for: '{question}'.\n\n"
-                    f"**Reason:**\nLive database metrics retrieved from sales, inventory waste logs, and customer reviews.\n\n"
-                    f"**Evidence:**\n{sales_ctx}\n\n{waste_ctx}\n\n{reviews_ctx}\n\n"
-                    f"**Recommendation:**\nMonitor top-selling dishes and optimize ingredient stock orders based on weekly sales patterns."
-                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            err_msg = str(e)
+            logger.error(f"Gemini API Error for question '{question}': {err_msg}")
+            
+            # Safe error categorization without exposing API key
+            if "API_KEY_INVALID" in err_msg or "400" in err_msg or "403" in err_msg or "API key not valid" in err_msg:
+                error_detail = "Invalid Gemini API Key provided. Please verify GOOGLE_API_KEY in backend/.env."
+            elif "404" in err_msg or "not found" in err_msg.lower():
+                error_detail = f"Configured Gemini model '{settings.GEMINI_MODEL}' was not found or is unsupported."
+            elif "429" in err_msg or "quota" in err_msg.lower():
+                error_detail = "Gemini API quota or rate limit exceeded. Please try again later."
+            else:
+                error_detail = f"Gemini AI Error: {err_msg}"
+
+            raise HTTPException(
+                status_code=500,
+                detail=error_detail
+            )
 
         elapsed_ms = int((time.time() - start_time) * 1000)
 
@@ -281,3 +298,4 @@ class AIService:
     async def get_chat_history(self, user_id: Optional[int], page: int = 1, per_page: int = 20):
         logs, total = await self.repo.get_logs(page=page, per_page=per_page, user_id=user_id)
         return [AILogResponse.model_validate(log) for log in logs], total
+
